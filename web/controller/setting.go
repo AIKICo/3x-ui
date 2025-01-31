@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"time"
+
 	"x-ui/web/entity"
 	"x-ui/web/service"
 	"x-ui/web/session"
@@ -41,7 +42,7 @@ func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/update", a.updateSetting)
 	g.POST("/updateUser", a.updateUser)
 	g.POST("/restartPanel", a.restartPanel)
-	g.GET("/getDefaultJsonConfig", a.getDefaultJsonConfig)
+	g.GET("/getDefaultJsonConfig", a.getDefaultXrayConfig)
 	g.POST("/updateUserSecret", a.updateSecret)
 	g.POST("/getUserSecret", a.getUserSecret)
 }
@@ -55,86 +56,11 @@ func (a *SettingController) getAllSetting(c *gin.Context) {
 	jsonObj(c, allSetting, nil)
 }
 
-func (a *SettingController) getDefaultJsonConfig(c *gin.Context) {
-	defaultJsonConfig, err := a.settingService.GetDefaultJsonConfig()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	jsonObj(c, defaultJsonConfig, nil)
-}
-
 func (a *SettingController) getDefaultSettings(c *gin.Context) {
-	expireDiff, err := a.settingService.GetExpireDiff()
+	result, err := a.settingService.GetDefaultSettings(c.Request.Host)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
 		return
-	}
-	trafficDiff, err := a.settingService.GetTrafficDiff()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	defaultCert, err := a.settingService.GetCertFile()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	defaultKey, err := a.settingService.GetKeyFile()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	tgBotEnable, err := a.settingService.GetTgbotenabled()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subEnable, err := a.settingService.GetSubEnable()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subPort, err := a.settingService.GetSubPort()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subPath, err := a.settingService.GetSubPath()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subDomain, err := a.settingService.GetSubDomain()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subKeyFile, err := a.settingService.GetSubKeyFile()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subCertFile, err := a.settingService.GetSubCertFile()
-	if err != nil {
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
-		return
-	}
-	subTLS := false
-	if subKeyFile != "" || subCertFile != "" {
-		subTLS = true
-	}
-	result := map[string]interface{}{
-		"expireDiff":  expireDiff,
-		"trafficDiff": trafficDiff,
-		"defaultCert": defaultCert,
-		"defaultKey":  defaultKey,
-		"tgBotEnable": tgBotEnable,
-		"subEnable":   subEnable,
-		"subPort":     subPort,
-		"subPath":     subPath,
-		"subDomain":   subDomain,
-		"subTLS":      subTLS,
 	}
 	jsonObj(c, result, nil)
 }
@@ -201,4 +127,13 @@ func (a *SettingController) getUserSecret(c *gin.Context) {
 	if user != nil {
 		jsonObj(c, user, nil)
 	}
+}
+
+func (a *SettingController) getDefaultXrayConfig(c *gin.Context) {
+	defaultJsonConfig, err := a.settingService.GetDefaultXrayConfig()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
+		return
+	}
+	jsonObj(c, defaultJsonConfig, nil)
 }
