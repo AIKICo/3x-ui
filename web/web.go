@@ -13,15 +13,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	"x-ui/config"
 	"x-ui/logger"
 	"x-ui/util/common"
 	"x-ui/web/controller"
 	"x-ui/web/job"
 	"x-ui/web/locale"
+	"x-ui/web/middleware"
 	"x-ui/web/network"
 	"x-ui/web/service"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
@@ -144,28 +147,6 @@ func (s *Server) getHtmlTemplate(funcMap template.FuncMap) (*template.Template, 
 	return t, nil
 }
 
-func redirectMiddleware(basePath string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Redirect from old '/xui' path to '/panel'
-		path := c.Request.URL.Path
-		redirects := map[string]string{
-			"panel/API": "panel/api",
-			"xui/API":   "panel/api",
-			"xui":       "panel",
-		}
-		for from, to := range redirects {
-			from, to = basePath+from, basePath+to
-			if strings.HasPrefix(path, from) {
-				newPath := to + path[len(from):]
-				c.Redirect(http.StatusMovedPermanently, newPath)
-				c.Abort()
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
 func (s *Server) initRouter() (*gin.Engine, error) {
 	if config.IsDebug() {
 		gin.SetMode(gin.DebugMode)
@@ -177,6 +158,15 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 
 	engine := gin.Default()
 
+	webDomain, err := s.settingService.GetWebDomain()
+	if err != nil {
+		return nil, err
+	}
+
+	if webDomain != "" {
+		engine.Use(middleware.DomainValidatorMiddleware(webDomain))
+	}
+
 	secret, err := s.settingService.GetSecret()
 	if err != nil {
 		return nil, err
@@ -186,10 +176,11 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	engine.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{basePath + "panel/API/"})))
 	assetsBasePath := basePath + "assets/"
 
 	store := cookie.NewStore(secret)
-	engine.Use(sessions.Sessions("session", store))
+	engine.Use(sessions.Sessions("3x-ui", store))
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
 	})
@@ -233,7 +224,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	}
 
 	// Apply the redirect middleware (`/xui` to `/panel`)
-	engine.Use(redirectMiddleware(basePath))
+	engine.Use(middleware.RedirectMiddleware(basePath))
 
 	g := engine.Group(basePath)
 
@@ -250,8 +241,18 @@ func (s *Server) startTask() {
 	if err != nil {
 		logger.Warning("start xray failed:", err)
 	}
-	// Check whether xray is running every 30 seconds
-	s.cron.AddJob("@every 30s", job.NewCheckXrayRunningJob())
+	// Check whether xray is running every second
+	s.cron.AddJob("@every 1s", job.NewCheckXrayRunningJob())
+
+	// Check if xray needs to be restarted every 30 seconds
+	s.cron.AddFunc("@every 30s", func() {
+		if s.xrayService.IsNeedRestartAndSetFalse() {
+			err := s.xrayService.RestartXray(false)
+			if err != nil {
+				logger.Error("restart xray failed:", err)
+			}
+		}
+	})
 
 	go func() {
 		time.Sleep(time.Second * 5)
@@ -259,15 +260,15 @@ func (s *Server) startTask() {
 		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
 	}()
 
-	// Check the inbound traffic every 30 seconds that the traffic exceeds and expires
-	s.cron.AddJob("@every 30s", job.NewCheckInboundJob())
-
 	// check client ips from log file every 10 sec
 	s.cron.AddJob("@every 10s", job.NewCheckClientIpJob())
 
+	// check client ips from log file every day
+	s.cron.AddJob("@daily", job.NewClearLogsJob())
+
 	// Make a traffic condition every day, 8:30
 	var entry cron.EntryID
-	isTgbotenabled, err := s.settingService.GetTgbotenabled()
+	isTgbotenabled, err := s.settingService.GetTgbotEnabled()
 	if (err == nil) && (isTgbotenabled) {
 		runtime, err := s.settingService.GetTgbotRuntime()
 		if err != nil || runtime == "" {
@@ -295,7 +296,7 @@ func (s *Server) startTask() {
 }
 
 func (s *Server) Start() (err error) {
-	//This is an anonymous function, no function name
+	// This is an anonymous function, no function name
 	defer func() {
 		if err != nil {
 			s.Stop()
@@ -337,25 +338,21 @@ func (s *Server) Start() (err error) {
 	}
 	if certFile != "" || keyFile != "" {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			listener.Close()
-			return err
+		if err == nil {
+			c := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
+			listener = network.NewAutoHttpsListener(listener)
+			listener = tls.NewListener(listener, c)
+			logger.Info("Web server running HTTPS on", listener.Addr())
+		} else {
+			logger.Error("Error loading certificates:", err)
+			logger.Info("Web server running HTTP on", listener.Addr())
 		}
-		c := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-		}
-		listener = network.NewAutoHttpsListener(listener)
-		listener = tls.NewListener(listener, c)
-	}
-
-	if certFile != "" || keyFile != "" {
-		logger.Info("web server run https on", listener.Addr())
 	} else {
-		logger.Info("web server run http on", listener.Addr())
+		logger.Info("Web server running HTTP on", listener.Addr())
 	}
 	s.listener = listener
-
-	s.startTask()
 
 	s.httpServer = &http.Server{
 		Handler: engine,
@@ -365,7 +362,9 @@ func (s *Server) Start() (err error) {
 		s.httpServer.Serve(listener)
 	}()
 
-	isTgbotenabled, err := s.settingService.GetTgbotenabled()
+	s.startTask()
+
+	isTgbotenabled, err := s.settingService.GetTgbotEnabled()
 	if (err == nil) && (isTgbotenabled) {
 		tgBot := s.tgbotService.NewTgbot()
 		tgBot.Start(i18nFS)

@@ -7,10 +7,11 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
+
 	"x-ui/config"
 	"x-ui/logger"
 	"x-ui/util/common"
+	"x-ui/web/middleware"
 	"x-ui/web/network"
 	"x-ui/web/service"
 
@@ -47,40 +48,76 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 
 	engine := gin.Default()
 
-	subPath, err := s.settingService.GetSubPath()
-	if err != nil {
-		return nil, err
-	}
-
 	subDomain, err := s.settingService.GetSubDomain()
 	if err != nil {
 		return nil, err
 	}
 
 	if subDomain != "" {
-		validateDomain := func(c *gin.Context) {
-			host := strings.Split(c.Request.Host, ":")[0]
-
-			if host != subDomain {
-				c.AbortWithStatus(http.StatusForbidden)
-				return
-			}
-
-			c.Next()
-		}
-
-		engine.Use(validateDomain)
+		engine.Use(middleware.DomainValidatorMiddleware(subDomain))
 	}
 
-	g := engine.Group(subPath)
+	LinksPath, err := s.settingService.GetSubPath()
+	if err != nil {
+		return nil, err
+	}
 
-	s.sub = NewSUBController(g)
+	JsonPath, err := s.settingService.GetSubJsonPath()
+	if err != nil {
+		return nil, err
+	}
+
+	Encrypt, err := s.settingService.GetSubEncrypt()
+	if err != nil {
+		return nil, err
+	}
+
+	ShowInfo, err := s.settingService.GetSubShowInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	RemarkModel, err := s.settingService.GetRemarkModel()
+	if err != nil {
+		RemarkModel = "-ieo"
+	}
+
+	SubUpdates, err := s.settingService.GetSubUpdates()
+	if err != nil {
+		SubUpdates = "10"
+	}
+
+	SubJsonFragment, err := s.settingService.GetSubJsonFragment()
+	if err != nil {
+		SubJsonFragment = ""
+	}
+
+	SubJsonNoises, err := s.settingService.GetSubJsonNoises()
+	if err != nil {
+		SubJsonNoises = ""
+	}
+
+	SubJsonMux, err := s.settingService.GetSubJsonMux()
+	if err != nil {
+		SubJsonMux = ""
+	}
+
+	SubJsonRules, err := s.settingService.GetSubJsonRules()
+	if err != nil {
+		SubJsonRules = ""
+	}
+
+	g := engine.Group("/")
+
+	s.sub = NewSUBController(
+		g, LinksPath, JsonPath, Encrypt, ShowInfo, RemarkModel, SubUpdates,
+		SubJsonFragment, SubJsonNoises, SubJsonMux, SubJsonRules)
 
 	return engine, nil
 }
 
 func (s *Server) Start() (err error) {
-	//This is an anonymous function, no function name
+	// This is an anonymous function, no function name
 	defer func() {
 		if err != nil {
 			s.Stop()
@@ -116,28 +153,28 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
+
 	listenAddr := net.JoinHostPort(listen, strconv.Itoa(port))
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return err
 	}
-	if certFile != "" || keyFile != "" {
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			listener.Close()
-			return err
-		}
-		c := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-		}
-		listener = network.NewAutoHttpsListener(listener)
-		listener = tls.NewListener(listener, c)
-	}
 
 	if certFile != "" || keyFile != "" {
-		logger.Info("Sub server run https on", listener.Addr())
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err == nil {
+			c := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
+			listener = network.NewAutoHttpsListener(listener)
+			listener = tls.NewListener(listener, c)
+			logger.Info("Sub server running HTTPS on", listener.Addr())
+		} else {
+			logger.Error("Error loading certificates:", err)
+			logger.Info("Sub server running HTTP on", listener.Addr())
+		}
 	} else {
-		logger.Info("Sub server run http on", listener.Addr())
+		logger.Info("Sub server running HTTP on", listener.Addr())
 	}
 	s.listener = listener
 
